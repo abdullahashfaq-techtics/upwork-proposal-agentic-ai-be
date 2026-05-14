@@ -1,12 +1,11 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import List
 from app.auth import signup_user, login_user
 from app.database import supabase
+from app.agents import proposal_graph
 
 router = APIRouter()
-
-APP_STATUS = "ok"
-DATABASE_STATUS = "unreachable"
 
 
 class AuthRequest(BaseModel):
@@ -14,18 +13,32 @@ class AuthRequest(BaseModel):
     password: str
 
 
+class UserProfile(BaseModel):
+    bio: str
+    skills: List[str]
+    past_projects: List[str]
+    rate: str
+
+
+class ProposalRequest(BaseModel):
+    job_description: str
+    user_profile: UserProfile
+
+
 @router.get("/health")
 def health_check():
-    global DATABASE_STATUS
+    app_status = "ok"
+    db_status = "unreachable"
+
     try:
         supabase.auth.get_session()
-        DATABASE_STATUS = "connected"
+        db_status = "connected"
     except Exception:
-        DATABASE_STATUS = "unreachable"
+        db_status = "unreachable"
 
     return {
-        "status": APP_STATUS,
-        "database": DATABASE_STATUS,
+        "status": app_status,
+        "database": db_status,
     }
 
 
@@ -67,3 +80,21 @@ def confirm_email(confirmed: str = None):
     raise HTTPException(
         status_code=400, detail="Invalid confirmation link. Please request a new one."
     )
+
+
+@router.post("/proposal/generate")
+def run_proposal(request: ProposalRequest):
+    try:
+        result = proposal_graph.invoke(
+            {
+                "job_description": request.job_description,
+                "user_profile": request.user_profile.model_dump(),
+            }
+        )
+        return {
+            "combined_input": result["combined_input"],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
