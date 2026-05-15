@@ -11,6 +11,8 @@ class Settings:
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 
 
 settings = Settings()

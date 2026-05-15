@@ -83,7 +83,7 @@ def confirm_email(confirmed: str = None):
 
 
 @router.post("/proposal/generate")
-def run_proposal(request: ProposalRequest):
+def generate_proposal(request: ProposalRequest):
     try:
         result = proposal_graph.invoke(
             {
@@ -93,8 +93,15 @@ def run_proposal(request: ProposalRequest):
         )
         return {
             "combined_input": result["combined_input"],
+            "job_analysis": result["job_analysis"],
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        error_msg = str(e).lower()
+        if "429" in str(e) or "resourceexhausted" in error_msg or "quota" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="AI service temporarily unavailable due to rate limits. Please try again in a minute.",
+            )
         raise HTTPException(status_code=500, detail=str(e))

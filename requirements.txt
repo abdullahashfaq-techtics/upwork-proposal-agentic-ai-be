@@ -6,3 +6,5 @@ supabase==2.9.0
 python-jose==3.3.0
 email-validator==2.2.0
 langgraph==0.2.55
+langchain-google-genai==2.0.7
+langchain==0.3.25
