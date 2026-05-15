@@ -26,6 +26,8 @@ class ProposalState(TypedDict):
     match_summary: dict
     proposal_draft: str
     draft_version: int
+    quality_report: dict
+    retry_count: int
     status: str
     proposal_id: Optional[str]
 
@@ -60,6 +62,8 @@ def input_collection(state: ProposalState) -> ProposalState:
         "combined_input": combined_input,
         "status": "draft",
         "proposal_id": None,
+        "draft_version": 1,
+        "retry_count": 0,
     }
 
 
@@ -214,7 +218,104 @@ def draft_proposal(state: ProposalState) -> ProposalState:
     return {
         **state,
         "proposal_draft": proposal_draft,
-        "draft_version": 1,
+    }
+
+
+def evaluate_quality(state: ProposalState) -> ProposalState:
+    """
+    Node 05 — Quality Evaluator
+    Scores proposal draft on 5 axes:
+    relevance, tone, specificity, hook, CTA
+    Max score: 50 (10 per axis)
+    Score < 35 → auto retry Node 04 (max 2x)
+    Score >= 35 → move to human review
+    """
+
+    proposal_draft = state["proposal_draft"]
+    job_analysis = state["job_analysis"]
+
+    prompt = f"""
+    You are a proposal quality evaluator.
+    Score the following Upwork proposal on 5 axes.
+    Each axis is scored out of 10. Maximum total is 50.
+
+    Proposal:
+    {proposal_draft}
+
+    Job Requirements:
+    - Skills: {job_analysis["skills"]}
+    - Tone: {job_analysis["tone"]}
+    - Pain Points: {job_analysis["pain_points"]}
+
+    Score on these 5 axes:
+    1. Relevance — does the proposal address the job requirements?
+    2. Tone — does it match the required tone: {job_analysis["tone"]}?
+    3. Specificity — does it mention specific skills and projects?
+    4. Hook — is the opening sentence attention-grabbing?
+    5. CTA — is there a clear call to action at the end?
+
+    Return ONLY a JSON object with exactly these fields:
+    {{
+        "scores": {{
+            "relevance": <0-10>,
+            "tone": <0-10>,
+            "specificity": <0-10>,
+            "hook": <0-10>,
+            "cta": <0-10>
+        }},
+        "total_score": <sum of all scores, max 50>,
+        "critique": ["list of specific improvements needed"]
+    }}
+
+    Return only the JSON. No explanation. No markdown. No extra text.
+    """
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+
+    raw = response.content.strip()
+
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    quality_report = json.loads(raw)
+
+    total_score = quality_report["total_score"]
+    status = "reviewing" if total_score >= 35 else "draft"
+
+    return {
+        **state,
+        "quality_report": quality_report,
+        "status": status,
+    }
+
+
+def route_after_evaluation(state: ProposalState) -> str:
+    """
+    Routing function after Node 05.
+    Decides which node runs next based on quality score.
+    Returns node name as string.
+    """
+    total_score = state["quality_report"]["total_score"]
+    retry_count = state.get("retry_count", 0)
+
+    if total_score < 35 and retry_count < 2:
+        return "retry"
+    else:
+        return "end"
+
+
+def increment_retry(state: ProposalState) -> ProposalState:
+    """
+    Small node that increments retry_count
+    before sending back to draft_proposal.
+    """
+    return {
+        **state,
+        "retry_count": state.get("retry_count", 0) + 1,
+        "draft_version": state.get("draft_version", 1) + 1,
     }
 
 
@@ -224,11 +325,25 @@ graph.add_node("input_collection", input_collection)
 graph.add_node("analyze_job", analyze_job)
 graph.add_node("match_profile", match_profile)
 graph.add_node("draft_proposal", draft_proposal)
+graph.add_node("evaluate_quality", evaluate_quality)
+graph.add_node("increment_retry", increment_retry)
 
 graph.add_edge(START, "input_collection")
 graph.add_edge("input_collection", "analyze_job")
 graph.add_edge("analyze_job", "match_profile")
 graph.add_edge("match_profile", "draft_proposal")
-graph.add_edge("draft_proposal", END)
+graph.add_edge("draft_proposal", "evaluate_quality")
+
+
+graph.add_conditional_edges(
+    "evaluate_quality",
+    route_after_evaluation,
+    {
+        "retry": "increment_retry",
+        "end": END,
+    },
+)
+
+graph.add_edge("increment_retry", "draft_proposal")
 
 proposal_graph = graph.compile()

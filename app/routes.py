@@ -97,6 +97,9 @@ def generate_proposal(request: ProposalRequest):
             "match_summary": result["match_summary"],
             "proposal_draft": result["proposal_draft"],
             "draft_version": result["draft_version"],
+            "retry_count": result["retry_count"],
+            "quality_report": result["quality_report"],
+            "status": result["status"],
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
