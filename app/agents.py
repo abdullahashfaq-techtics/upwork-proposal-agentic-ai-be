@@ -23,6 +23,7 @@ class ProposalState(TypedDict):
     user_profile: dict
     combined_input: dict
     job_analysis: dict
+    match_summary: dict
     status: str
     proposal_id: Optional[str]
 
@@ -103,13 +104,70 @@ def analyze_job(state: ProposalState) -> ProposalState:
     }
 
 
+def match_profile(state: ProposalState) -> ProposalState:
+    """
+    Node 03 — Profile Matching
+    Scores freelancer skills vs JD requirements.
+    Picks top 2-3 relevant projects.
+    Produces match_summary with what to emphasise.
+    """
+
+    job_analysis = state["job_analysis"]
+    user_profile = state["combined_input"]["user_profile"]
+
+    prompt = f"""
+    You are a proposal writing assistant.
+    Compare the freelancer profile against the job requirements.
+
+    Job Requirements:
+    - Required Skills: {job_analysis["skills"]}
+    - Tone: {job_analysis["tone"]}
+    - Pain Points: {job_analysis["pain_points"]}
+
+    Freelancer Profile:
+    - Bio: {user_profile["bio"]}
+    - Skills: {user_profile["skills"]}
+    - Past Projects: {user_profile["past_projects"]}
+    - Rate: {user_profile["rate"]}
+
+    Return ONLY a JSON object with exactly these fields:
+    {{
+        "matched_skills": ["skills from freelancer profile that match job requirements"],
+        "top_projects": ["2-3 most relevant past projects to mention in proposal"],
+        "match_score": <number between 0 and 100 representing how well profile matches job>,
+        "emphasis": ["key points to emphasise in the proposal"]
+    }}
+
+    Return only the JSON. No explanation. No markdown. No extra text.
+    """
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+
+    raw = response.content.strip()
+
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    match_summary = json.loads(raw)
+
+    return {
+        **state,
+        "match_summary": match_summary,
+    }
+
+
 graph = StateGraph(ProposalState)
 
 graph.add_node("input_collection", input_collection)
 graph.add_node("analyze_job", analyze_job)
+graph.add_node("match_profile", match_profile)
 
 graph.add_edge(START, "input_collection")
 graph.add_edge("input_collection", "analyze_job")
-graph.add_edge("analyze_job", END)
+graph.add_edge("analyze_job", "match_profile")
+graph.add_edge("match_profile", END)
 
 proposal_graph = graph.compile()
