@@ -95,6 +95,8 @@ def generate_proposal(request: ProposalRequest):
             "combined_input": result["combined_input"],
             "job_analysis": result["job_analysis"],
             "match_summary": result["match_summary"],
+            "proposal_draft": result["proposal_draft"],
+            "draft_version": result["draft_version"],
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

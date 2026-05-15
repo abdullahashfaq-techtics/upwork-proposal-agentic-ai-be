@@ -24,6 +24,8 @@ class ProposalState(TypedDict):
     combined_input: dict
     job_analysis: dict
     match_summary: dict
+    proposal_draft: str
+    draft_version: int
     status: str
     proposal_id: Optional[str]
 
@@ -159,15 +161,74 @@ def match_profile(state: ProposalState) -> ProposalState:
     }
 
 
+def draft_proposal(state: ProposalState) -> ProposalState:
+    """
+    Node 04 — Proposal Draft
+    Generates 150-300 word proposal using:
+    job_analysis + match_summary + user profile.
+    Structure: hook → experience → solution → CTA
+    """
+
+    job_analysis = state["job_analysis"]
+    match_summary = state["match_summary"]
+    user_profile = state["combined_input"]["user_profile"]
+    job_description = state["combined_input"]["job_description"]
+
+    prompt = f"""
+    You are an expert Upwork proposal writer.
+    Write a professional proposal for the following job.
+
+    Job Description:
+    {job_description}
+
+    Job Analysis:
+    - Required Skills: {job_analysis["skills"]}
+    - Tone: {job_analysis["tone"]}
+    - Budget: {job_analysis["budget"]}
+    - Pain Points: {job_analysis["pain_points"]}
+
+    Freelancer Profile:
+    - Bio: {user_profile["bio"]}
+    - Matched Skills: {match_summary["matched_skills"]}
+    - Relevant Projects: {match_summary["top_projects"]}
+    - Key Points to Emphasise: {match_summary["emphasis"]}
+
+    Write a proposal with this exact structure:
+    1. Hook — grab attention in first sentence
+    2. Experience — mention relevant skills and projects
+    3. Solution — explain how you will solve their problem
+    4. CTA — clear call to action at the end
+
+    Requirements:
+    - 150 to 300 words
+    - Match the tone: {job_analysis["tone"]}
+    - No markdown, no bullet points
+    - Plain text only — ready to paste into Upwork
+    - Do not include a subject line or greeting
+    """
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+
+    proposal_draft = response.content.strip()
+
+    return {
+        **state,
+        "proposal_draft": proposal_draft,
+        "draft_version": 1,
+    }
+
+
 graph = StateGraph(ProposalState)
 
 graph.add_node("input_collection", input_collection)
 graph.add_node("analyze_job", analyze_job)
 graph.add_node("match_profile", match_profile)
+graph.add_node("draft_proposal", draft_proposal)
 
 graph.add_edge(START, "input_collection")
 graph.add_edge("input_collection", "analyze_job")
 graph.add_edge("analyze_job", "match_profile")
-graph.add_edge("match_profile", END)
+graph.add_edge("match_profile", "draft_proposal")
+graph.add_edge("draft_proposal", END)
 
 proposal_graph = graph.compile()
