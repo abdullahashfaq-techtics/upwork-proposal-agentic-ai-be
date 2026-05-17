@@ -39,6 +39,12 @@ def configure_openapi(app):
                 "bearerFormat": "JWT",
             }
         }
+
+        for path, methods in schema.get("paths", {}).items():
+            if "/proposal/" in path:
+                for method in methods.values():
+                    method["security"] = [{"BearerAuth": []}]
+
         app.openapi_schema = schema
         return app.openapi_schema
 

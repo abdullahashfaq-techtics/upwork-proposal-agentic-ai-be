@@ -3,6 +3,8 @@ from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END, START
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import interrupt
 from app.config import settings
 
 # Gemini (commented out — quota exceeded, enable later)
@@ -28,6 +30,8 @@ class ProposalState(TypedDict):
     draft_version: int
     quality_report: dict
     retry_count: int
+    human_decision: str
+    human_feedback: str
     status: str
     proposal_id: Optional[str]
 
@@ -64,6 +68,8 @@ def input_collection(state: ProposalState) -> ProposalState:
         "proposal_id": None,
         "draft_version": 1,
         "retry_count": 0,
+        "human_decision": "",
+        "human_feedback": "",
     }
 
 
@@ -304,7 +310,7 @@ def route_after_evaluation(state: ProposalState) -> str:
     if total_score < 35 and retry_count < 2:
         return "retry"
     else:
-        return "end"
+        return "human_review"
 
 
 def increment_retry(state: ProposalState) -> ProposalState:
@@ -319,6 +325,32 @@ def increment_retry(state: ProposalState) -> ProposalState:
     }
 
 
+def human_review(state: ProposalState) -> ProposalState:
+    decision = interrupt(
+        {
+            "proposal_draft": state["proposal_draft"],
+            "quality_report": state["quality_report"],
+            "message": "Please review the proposal. Decision: approved | revise | rejected",
+        }
+    )
+    return {
+        **state,
+        "human_decision": decision.get("decision", ""),
+        "human_feedback": decision.get("feedback", ""),
+        "status": decision.get("decision", "draft"),
+    }
+
+
+def route_after_human_review(state: ProposalState) -> str:
+    decision = state.get("human_decision", "")
+    if decision == "approved":
+        return "end"
+    elif decision == "revise":
+        return "revise"
+    else:
+        return "end"
+
+
 graph = StateGraph(ProposalState)
 
 graph.add_node("input_collection", input_collection)
@@ -327,6 +359,7 @@ graph.add_node("match_profile", match_profile)
 graph.add_node("draft_proposal", draft_proposal)
 graph.add_node("evaluate_quality", evaluate_quality)
 graph.add_node("increment_retry", increment_retry)
+graph.add_node("human_review", human_review)
 
 graph.add_edge(START, "input_collection")
 graph.add_edge("input_collection", "analyze_job")
@@ -340,10 +373,23 @@ graph.add_conditional_edges(
     route_after_evaluation,
     {
         "retry": "increment_retry",
-        "end": END,
+        "human_review": "human_review",
     },
 )
 
+
 graph.add_edge("increment_retry", "draft_proposal")
 
-proposal_graph = graph.compile()
+
+graph.add_conditional_edges(
+    "human_review",
+    route_after_human_review,
+    {
+        "end": END,
+        "revise": END,
+    },
+)
+
+
+checkpointer = MemorySaver()
+proposal_graph = graph.compile(checkpointer=checkpointer)

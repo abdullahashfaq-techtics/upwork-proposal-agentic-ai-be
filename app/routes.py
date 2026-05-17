@@ -1,10 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import List
-from app.auth import signup_user, login_user
+from typing import List, Optional
+from app.auth import signup_user, login_user, get_current_user
 from app.database import supabase
 from app.agents import proposal_graph
 
+bearer_scheme = HTTPBearer()
 router = APIRouter()
 
 
@@ -23,6 +25,11 @@ class UserProfile(BaseModel):
 class ProposalRequest(BaseModel):
     job_description: str
     user_profile: UserProfile
+
+
+class ResumeRequest(BaseModel):
+    decision: str
+    feedback: Optional[str] = ""
 
 
 @router.get("/health")
@@ -83,31 +90,109 @@ def confirm_email(confirmed: str = None):
 
 
 @router.post("/proposal/generate")
-def generate_proposal(request: ProposalRequest):
+def generate_proposal(
+    request: ProposalRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+):
+    token = credentials.credentials
+
     try:
-        result = proposal_graph.invoke(
+        user = get_current_user(token)
+        user_id = user["user_id"]
+
+        config = {"configurable": {"thread_id": user_id}}
+
+        for event in proposal_graph.stream(
             {
                 "job_description": request.job_description,
                 "user_profile": request.user_profile.model_dump(),
-            }
-        )
+            },
+            config=config,
+        ):
+            pass
+
+        current_state = proposal_graph.get_state(config)
+        state_values = current_state.values
+
         return {
-            "combined_input": result["combined_input"],
-            "job_analysis": result["job_analysis"],
-            "match_summary": result["match_summary"],
-            "proposal_draft": result["proposal_draft"],
-            "draft_version": result["draft_version"],
-            "retry_count": result["retry_count"],
-            "quality_report": result["quality_report"],
-            "status": result["status"],
+            "user_id": user_id,
+            "status": state_values.get("status"),
+            "proposal_draft": state_values.get("proposal_draft"),
+            "draft_version": state_values.get("draft_version"),
+            "retry_count": state_values.get("retry_count"),
+            "quality_report": state_values.get("quality_report"),
+            "message": "Proposal ready for review. Use /proposal/resume to submit decision.",
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         error_msg = str(e).lower()
         if "429" in str(e) or "resourceexhausted" in error_msg or "quota" in error_msg:
             raise HTTPException(
                 status_code=503,
-                detail="AI service temporarily unavailable due to rate limits. Please try again in a minute.",
+                detail="AI service temporarily unavailable. Please try again in a minute.",
             )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/proposal/resume")
+def resume_proposal(
+    request: ResumeRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+):
+    token = credentials.credentials
+
+    valid_decisions = ["approved", "revise", "rejected"]
+    if request.decision not in valid_decisions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid decision. Must be one of: {valid_decisions}",
+        )
+
+    if request.decision == "revise" and not request.feedback:
+        raise HTTPException(
+            status_code=400,
+            detail="feedback is required when decision is 'revise'",
+        )
+
+    try:
+        user = get_current_user(token)
+        user_id = user["user_id"]
+
+        config = {"configurable": {"thread_id": user_id}}
+
+        current_state = proposal_graph.get_state(config)
+        if not current_state.values:
+            raise HTTPException(
+                status_code=404,
+                detail="No proposal found. Please generate a proposal first.",
+            )
+
+        proposal_draft = current_state.values.get("proposal_draft")
+
+        proposal_graph.update_state(
+            config,
+            {
+                "human_decision": request.decision,
+                "human_feedback": request.feedback,
+                "status": request.decision,
+            },
+            as_node="human_review",
+        )
+
+        for event in proposal_graph.stream(None, config=config):
+            pass
+
+        return {
+            "user_id": user_id,
+            "status": request.decision,
+            "human_decision": request.decision,
+            "proposal_draft": proposal_draft,
+            "message": f"Proposal {request.decision}.",
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
