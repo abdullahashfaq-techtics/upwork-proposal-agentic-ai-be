@@ -106,6 +106,7 @@ def generate_proposal(
             {
                 "job_description": request.job_description,
                 "user_profile": request.user_profile.model_dump(),
+                "proposal_id": user_id,
             },
             config=config,
         ):
@@ -202,6 +203,7 @@ def resume_proposal(
             "status": final_state.values.get("status"),
             "human_decision": final_state.values.get("human_decision"),
             "proposal_draft": final_state.values.get("proposal_draft"),
+            "final_proposal": final_state.values.get("final_proposal"),
             "draft_version": final_state.values.get("draft_version"),
             "draft_history": final_state.values.get("draft_history"),
             "waiting_for_review": is_paused,

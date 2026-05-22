@@ -34,6 +34,7 @@ class ProposalState(TypedDict):
     draft_history: list
     status: str
     proposal_id: Optional[str]
+    final_proposal: str
 
 
 def input_collection(state: ProposalState) -> ProposalState:
@@ -65,7 +66,7 @@ def input_collection(state: ProposalState) -> ProposalState:
         **state,
         "combined_input": combined_input,
         "status": "draft",
-        "proposal_id": None,
+        "proposal_id": state.get("proposal_id"),
         "draft_version": 1,
         "retry_count": 0,
         "human_decision": "",
@@ -202,7 +203,9 @@ def draft_proposal(state: ProposalState) -> ProposalState:
     - 150 to 300 words
     - Match the tone: {job_analysis["tone"]}
     - No markdown, no bullet points
+    - No bold, no headers, no special characters
     - Plain text only, ready to paste into Upwork
+    - Correct grammar and spelling
     - Do not include a subject line or greeting
     """
 
@@ -360,7 +363,9 @@ def revise_draft(state: ProposalState) -> ProposalState:
     - Address ALL feedback points
     - Keep 150 to 300 words
     - No markdown, no bullet points
+    - No bold, no headers, no special characters
     - Plain text only
+    - Correct grammar and spelling
     - Do not include subject line or greeting
     """
 
@@ -374,6 +379,41 @@ def revise_draft(state: ProposalState) -> ProposalState:
         "human_decision": "",
         "human_feedback": "",
         "status": "draft",
+    }
+
+
+def finalize_proposal(state: ProposalState) -> ProposalState:
+    """
+    Node 08 - Finalize and Save
+    Saves approved proposal to Supabase.
+    Sets final_proposal and status = complete.
+    """
+    from app.database import supabase
+
+    final_proposal = state["proposal_draft"]
+
+    user_id = state.get("proposal_id")
+
+    try:
+        supabase.table("proposals").insert(
+            {
+                "user_id": user_id,
+                "job_description": state["job_description"],
+                "proposal_draft": state["proposal_draft"],
+                "draft_version": state["draft_version"],
+                "quality_report": state["quality_report"],
+                "human_feedback": state.get("human_feedback", ""),
+                "final_proposal": final_proposal,
+                "status": "complete",
+            }
+        ).execute()
+    except Exception as e:
+        print(f"Supabase save error: {e}")
+
+    return {
+        **state,
+        "final_proposal": final_proposal,
+        "status": "complete",
     }
 
 
@@ -396,7 +436,7 @@ def route_after_human_review(state: ProposalState) -> str:
     """
     decision = state.get("human_decision", "")
     if decision == "approved":
-        return "end"
+        return "finalize"
     elif decision == "revise":
         return "revise"
     else:
@@ -413,6 +453,7 @@ graph.add_node("evaluate_quality", evaluate_quality)
 graph.add_node("increment_retry", increment_retry)
 graph.add_node("human_review", human_review)
 graph.add_node("revise_draft", revise_draft)
+graph.add_node("finalize_proposal", finalize_proposal)
 
 graph.add_edge(START, "input_collection")
 graph.add_edge("input_collection", "analyze_job")
@@ -435,10 +476,13 @@ graph.add_conditional_edges(
     "human_review",
     route_after_human_review,
     {
+        "finalize": "finalize_proposal",
         "end": END,
         "revise": "revise_draft",
     },
 )
+
+graph.add_edge("finalize_proposal", END)
 
 graph.add_conditional_edges(
     "revise_draft",
