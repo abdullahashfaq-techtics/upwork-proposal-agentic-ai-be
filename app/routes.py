@@ -121,6 +121,7 @@ def generate_proposal(
             "draft_version": state_values.get("draft_version"),
             "retry_count": state_values.get("retry_count"),
             "quality_report": state_values.get("quality_report"),
+            "draft_history": state_values.get("draft_history"),
             "message": "Proposal ready for review. Use /proposal/resume to submit decision.",
         }
     except ValueError as e:
@@ -164,11 +165,17 @@ def resume_proposal(
         current_state = proposal_graph.get_state(config)
         if not current_state.values:
             raise HTTPException(
-                status_code=404,
-                detail="No proposal found. Please generate a proposal first.",
+                status_code=400,
+                detail="No active proposal found. Please call /proposal/generate first.",
             )
 
-        proposal_draft = current_state.values.get("proposal_draft")
+        if request.decision == "revise":
+            draft_history = current_state.values.get("draft_history", [])
+            if len(draft_history) >= 3:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Maximum revision limit of 3 reached. Please approve or reject the proposal.",
+                )
 
         proposal_graph.update_state(
             config,
@@ -180,15 +187,27 @@ def resume_proposal(
             as_node="human_review",
         )
 
-        for event in proposal_graph.stream(None, config=config):
+        for event in proposal_graph.stream(
+            None,
+            config=config,
+            stream_mode="values",
+        ):
             pass
+
+        final_state = proposal_graph.get_state(config)
+        is_paused = bool(final_state.tasks)
 
         return {
             "user_id": user_id,
-            "status": request.decision,
-            "human_decision": request.decision,
-            "proposal_draft": proposal_draft,
-            "message": f"Proposal {request.decision}.",
+            "status": final_state.values.get("status"),
+            "human_decision": final_state.values.get("human_decision"),
+            "proposal_draft": final_state.values.get("proposal_draft"),
+            "draft_version": final_state.values.get("draft_version"),
+            "draft_history": final_state.values.get("draft_history"),
+            "waiting_for_review": is_paused,
+            "message": "Proposal revised. Please review again."
+            if is_paused
+            else f"Proposal {request.decision}.",
         }
     except HTTPException:
         raise

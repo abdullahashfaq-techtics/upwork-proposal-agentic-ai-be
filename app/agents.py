@@ -5,9 +5,8 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
-from app.config import settings
 
-# Gemini (commented out — quota exceeded, enable later)
+# Gemini (quota exceeded, enable later)
 # from langchain_google_genai import ChatGoogleGenerativeAI
 # if not settings.GEMINI_API_KEY:
 #     raise ValueError("GEMINI_API_KEY is missing from .env")
@@ -16,7 +15,7 @@ from app.config import settings
 #     google_api_key=settings.GEMINI_API_KEY
 # )
 
-
+# Groq (active for now — switch back to Gemini later)
 llm = init_chat_model("groq:llama-3.3-70b-versatile")
 
 
@@ -32,13 +31,14 @@ class ProposalState(TypedDict):
     retry_count: int
     human_decision: str
     human_feedback: str
+    draft_history: list
     status: str
     proposal_id: Optional[str]
 
 
 def input_collection(state: ProposalState) -> ProposalState:
     """
-    Node 01 — Input Collection + Combine
+    Node 01 - Input Collection + Combine
     Validates job_description and user_profile.
     Combines both into combined_input.
     """
@@ -70,14 +70,14 @@ def input_collection(state: ProposalState) -> ProposalState:
         "retry_count": 0,
         "human_decision": "",
         "human_feedback": "",
+        "draft_history": [],
     }
 
 
 def analyze_job(state: ProposalState) -> ProposalState:
     """
-    Node 02 — Job Analysis
+    Node 02 - Job Analysis
     Calls LLM to extract skills, tone, budget, pain_points.
-    Currently using Groq — switch to Gemini when quota available.
     """
     job_description = state["combined_input"]["job_description"]
 
@@ -99,7 +99,6 @@ def analyze_job(state: ProposalState) -> ProposalState:
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
-
     raw = response.content.strip()
 
     if raw.startswith("```"):
@@ -108,22 +107,17 @@ def analyze_job(state: ProposalState) -> ProposalState:
             raw = raw[4:]
     raw = raw.strip()
 
-    job_analysis_result = json.loads(raw)
-
     return {
         **state,
-        "job_analysis": job_analysis_result,
+        "job_analysis": json.loads(raw),
     }
 
 
 def match_profile(state: ProposalState) -> ProposalState:
     """
-    Node 03 — Profile Matching
+    Node 03 - Profile Matching
     Scores freelancer skills vs JD requirements.
-    Picks top 2-3 relevant projects.
-    Produces match_summary with what to emphasise.
     """
-
     job_analysis = state["job_analysis"]
     user_profile = state["combined_input"]["user_profile"]
 
@@ -146,7 +140,7 @@ def match_profile(state: ProposalState) -> ProposalState:
     {{
         "matched_skills": ["skills from freelancer profile that match job requirements"],
         "top_projects": ["2-3 most relevant past projects to mention in proposal"],
-        "match_score": <number between 0 and 100 representing how well profile matches job>,
+        "match_score": 0,
         "emphasis": ["key points to emphasise in the proposal"]
     }}
 
@@ -154,7 +148,6 @@ def match_profile(state: ProposalState) -> ProposalState:
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
-
     raw = response.content.strip()
 
     if raw.startswith("```"):
@@ -163,22 +156,18 @@ def match_profile(state: ProposalState) -> ProposalState:
             raw = raw[4:]
     raw = raw.strip()
 
-    match_summary = json.loads(raw)
-
     return {
         **state,
-        "match_summary": match_summary,
+        "match_summary": json.loads(raw),
     }
 
 
 def draft_proposal(state: ProposalState) -> ProposalState:
     """
-    Node 04 — Proposal Draft
-    Generates 150-300 word proposal using:
-    job_analysis + match_summary + user profile.
-    Structure: hook → experience → solution → CTA
+    Node 04 - Proposal Draft
+    Generates 150-300 word proposal.
+    Structure: hook, experience, solution, CTA
     """
-
     job_analysis = state["job_analysis"]
     match_summary = state["match_summary"]
     user_profile = state["combined_input"]["user_profile"]
@@ -204,39 +193,33 @@ def draft_proposal(state: ProposalState) -> ProposalState:
     - Key Points to Emphasise: {match_summary["emphasis"]}
 
     Write a proposal with this exact structure:
-    1. Hook — grab attention in first sentence
-    2. Experience — mention relevant skills and projects
-    3. Solution — explain how you will solve their problem
-    4. CTA — clear call to action at the end
+    1. Hook - grab attention in first sentence
+    2. Experience - mention relevant skills and projects
+    3. Solution - explain how you will solve their problem
+    4. CTA - clear call to action at the end
 
     Requirements:
     - 150 to 300 words
     - Match the tone: {job_analysis["tone"]}
     - No markdown, no bullet points
-    - Plain text only — ready to paste into Upwork
+    - Plain text only, ready to paste into Upwork
     - Do not include a subject line or greeting
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
 
-    proposal_draft = response.content.strip()
-
     return {
         **state,
-        "proposal_draft": proposal_draft,
+        "proposal_draft": response.content.strip(),
     }
 
 
 def evaluate_quality(state: ProposalState) -> ProposalState:
     """
-    Node 05 — Quality Evaluator
-    Scores proposal draft on 5 axes:
-    relevance, tone, specificity, hook, CTA
-    Max score: 50 (10 per axis)
-    Score < 35 → auto retry Node 04 (max 2x)
-    Score >= 35 → move to human review
+    Node 05 - Quality Evaluator
+    Scores proposal on 5 axes. Max 50.
+    Score less than 35 triggers retry. Score 35 or more goes to human review.
     """
-
     proposal_draft = state["proposal_draft"]
     job_analysis = state["job_analysis"]
 
@@ -254,22 +237,22 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
     - Pain Points: {job_analysis["pain_points"]}
 
     Score on these 5 axes:
-    1. Relevance — does the proposal address the job requirements?
-    2. Tone — does it match the required tone: {job_analysis["tone"]}?
-    3. Specificity — does it mention specific skills and projects?
-    4. Hook — is the opening sentence attention-grabbing?
-    5. CTA — is there a clear call to action at the end?
+    1. Relevance - does it address job requirements?
+    2. Tone - does it match required tone: {job_analysis["tone"]}?
+    3. Specificity - does it mention specific skills and projects?
+    4. Hook - is the opening sentence attention-grabbing?
+    5. CTA - is there a clear call to action?
 
     Return ONLY a JSON object with exactly these fields:
     {{
         "scores": {{
-            "relevance": <0-10>,
-            "tone": <0-10>,
-            "specificity": <0-10>,
-            "hook": <0-10>,
-            "cta": <0-10>
+            "relevance": 0,
+            "tone": 0,
+            "specificity": 0,
+            "hook": 0,
+            "cta": 0
         }},
-        "total_score": <sum of all scores, max 50>,
+        "total_score": 0,
         "critique": ["list of specific improvements needed"]
     }}
 
@@ -277,7 +260,6 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
-
     raw = response.content.strip()
 
     if raw.startswith("```"):
@@ -287,7 +269,6 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
     raw = raw.strip()
 
     quality_report = json.loads(raw)
-
     total_score = quality_report["total_score"]
     status = "reviewing" if total_score >= 35 else "draft"
 
@@ -301,21 +282,20 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
 def route_after_evaluation(state: ProposalState) -> str:
     """
     Routing function after Node 05.
-    Decides which node runs next based on quality score.
-    Returns node name as string.
+    Score less than 35 AND retry_count less than 2 goes to retry.
+    Score 35 or more OR retry_count 2 or more goes to human review.
     """
     total_score = state["quality_report"]["total_score"]
     retry_count = state.get("retry_count", 0)
 
     if total_score < 35 and retry_count < 2:
         return "retry"
-    else:
-        return "human_review"
+    return "human_review"
 
 
 def increment_retry(state: ProposalState) -> ProposalState:
     """
-    Small node that increments retry_count
+    Increments retry_count and draft_version
     before sending back to draft_proposal.
     """
     return {
@@ -326,22 +306,94 @@ def increment_retry(state: ProposalState) -> ProposalState:
 
 
 def human_review(state: ProposalState) -> ProposalState:
-    decision = interrupt(
+    """
+    Node 06 - Human Review
+    Graph pauses here using interrupt().
+    Resumes when update_state is called from /proposal/resume.
+    human_decision and human_feedback are already in state
+    when graph resumes, set by update_state in routes.py.
+    """
+    interrupt(
         {
             "proposal_draft": state["proposal_draft"],
             "quality_report": state["quality_report"],
             "message": "Please review the proposal. Decision: approved | revise | rejected",
         }
     )
+
+    return state
+
+
+def revise_draft(state: ProposalState) -> ProposalState:
+    """
+    Node 07 - Revise Draft
+    Rewrites proposal based on human_feedback + critique.
+    Saves previous draft to draft_history.
+    Increments draft_version.
+    Routes back to Node 05 for re-evaluation.
+    Max 3 revision cycles.
+    """
+    history = state.get("draft_history", [])
+    history.append(
+        {
+            "version": state["draft_version"],
+            "draft": state["proposal_draft"],
+            "quality_report": state["quality_report"],
+            "human_feedback": state["human_feedback"],
+        }
+    )
+
+    prompt = f"""
+    You are an expert Upwork proposal writer.
+    Rewrite the following proposal based on human feedback.
+
+    Current Proposal:
+    {state["proposal_draft"]}
+
+    Human Feedback:
+    {state["human_feedback"]}
+
+    Quality Critique:
+    {state["quality_report"]["critique"]}
+
+    Requirements:
+    - Address ALL feedback points
+    - Keep 150 to 300 words
+    - No markdown, no bullet points
+    - Plain text only
+    - Do not include subject line or greeting
+    """
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+
     return {
         **state,
-        "human_decision": decision.get("decision", ""),
-        "human_feedback": decision.get("feedback", ""),
-        "status": decision.get("decision", "draft"),
+        "proposal_draft": response.content.strip(),
+        "draft_version": state["draft_version"] + 1,
+        "draft_history": history,
+        "human_decision": "",
+        "human_feedback": "",
+        "status": "draft",
     }
 
 
+def route_after_revision(state: ProposalState) -> str:
+    """
+    After revision goes back to evaluate_quality.
+    Max 3 revision cycles checked by draft_history length.
+    """
+    if len(state.get("draft_history", [])) >= 3:
+        return "end"
+    return "evaluate"
+
+
 def route_after_human_review(state: ProposalState) -> str:
+    """
+    Routing function after Node 06.
+    approved goes to END.
+    revise goes to revise_draft.
+    rejected goes to END.
+    """
     decision = state.get("human_decision", "")
     if decision == "approved":
         return "end"
@@ -360,13 +412,13 @@ graph.add_node("draft_proposal", draft_proposal)
 graph.add_node("evaluate_quality", evaluate_quality)
 graph.add_node("increment_retry", increment_retry)
 graph.add_node("human_review", human_review)
+graph.add_node("revise_draft", revise_draft)
 
 graph.add_edge(START, "input_collection")
 graph.add_edge("input_collection", "analyze_job")
 graph.add_edge("analyze_job", "match_profile")
 graph.add_edge("match_profile", "draft_proposal")
 graph.add_edge("draft_proposal", "evaluate_quality")
-
 
 graph.add_conditional_edges(
     "evaluate_quality",
@@ -377,19 +429,25 @@ graph.add_conditional_edges(
     },
 )
 
-
 graph.add_edge("increment_retry", "draft_proposal")
-
 
 graph.add_conditional_edges(
     "human_review",
     route_after_human_review,
     {
         "end": END,
-        "revise": END,
+        "revise": "revise_draft",
     },
 )
 
+graph.add_conditional_edges(
+    "revise_draft",
+    route_after_revision,
+    {
+        "evaluate": "evaluate_quality",
+        "end": END,
+    },
+)
 
 checkpointer = MemorySaver()
 proposal_graph = graph.compile(checkpointer=checkpointer)
