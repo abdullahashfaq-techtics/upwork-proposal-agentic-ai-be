@@ -175,8 +175,8 @@ def draft_proposal(state: ProposalState) -> ProposalState:
     job_description = state["combined_input"]["job_description"]
 
     prompt = f"""
-    You are an expert Upwork proposal writer.
-    Write a professional proposal for the following job.
+    You are a top-rated Upwork freelancer writing a winning proposal.
+    You have a 98% job success score and have won over 200 contracts.
 
     Job Description:
     {job_description}
@@ -185,7 +185,7 @@ def draft_proposal(state: ProposalState) -> ProposalState:
     - Required Skills: {job_analysis["skills"]}
     - Tone: {job_analysis["tone"]}
     - Budget: {job_analysis["budget"]}
-    - Pain Points: {job_analysis["pain_points"]}
+    - Client Pain Points: {job_analysis["pain_points"]}
 
     Freelancer Profile:
     - Bio: {user_profile["bio"]}
@@ -193,20 +193,34 @@ def draft_proposal(state: ProposalState) -> ProposalState:
     - Relevant Projects: {match_summary["top_projects"]}
     - Key Points to Emphasise: {match_summary["emphasis"]}
 
-    Write a proposal with this exact structure:
-    1. Hook - grab attention in first sentence
-    2. Experience - mention relevant skills and projects
-    3. Solution - explain how you will solve their problem
-    4. CTA - clear call to action at the end
+    Write a proposal following these STRICT rules:
 
-    Requirements:
-    - 150 to 300 words
+    STRUCTURE:
+    1. Hook — Open with the client's specific problem or goal from the job description.
+       Do NOT start with "I am excited" or "I would love".
+       Start with THEIR situation, not yours.
+       Example: "Your AI backend needs to handle real-time data processing at scale —"
+
+    2. Experience — Mention 1-2 specific past projects that directly relate.
+       Include a concrete result if possible (increased speed by 40%, reduced cost by 30%).
+       Do NOT list skills generically.
+
+    3. Solution — Explain your specific approach to THEIR project.
+       Show you understood their requirements.
+       Give 2-3 concrete steps you would take.
+
+    4. CTA — End with one clear, low-friction question or next step.
+       Example: "Want to jump on a 15-minute call to map out the architecture?"
+
+    STRICT REQUIREMENTS:
+    - 150 to 250 words maximum
     - Match the tone: {job_analysis["tone"]}
-    - No markdown, no bullet points
-    - No bold, no headers, no special characters
+    - No markdown, no bullet points, no bold, no headers
     - Plain text only, ready to paste into Upwork
+    - No generic phrases: "I am excited", "I would love to", "I am a fast learner"
+    - No self-introduction at the start
     - Correct grammar and spelling
-    - Do not include a subject line or greeting
+    - Sound like a confident expert, not an eager applicant
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -227,9 +241,8 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
     job_analysis = state["job_analysis"]
 
     prompt = f"""
-    You are a proposal quality evaluator.
-    Score the following Upwork proposal on 5 axes.
-    Each axis is scored out of 10. Maximum total is 50.
+    You are a senior Upwork recruiter evaluating proposals.
+    You have reviewed 10,000+ proposals and know exactly what wins contracts.
 
     Proposal:
     {proposal_draft}
@@ -239,12 +252,32 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
     - Tone: {job_analysis["tone"]}
     - Pain Points: {job_analysis["pain_points"]}
 
-    Score on these 5 axes:
-    1. Relevance - does it address job requirements?
-    2. Tone - does it match required tone: {job_analysis["tone"]}?
-    3. Specificity - does it mention specific skills and projects?
-    4. Hook - is the opening sentence attention-grabbing?
-    5. CTA - is there a clear call to action?
+    Score on these 5 axes. Be STRICT — average proposals get 5-6 not 8-9:
+
+    1. Relevance (0-10) — Does it directly address the client's specific pain points?
+       10 = addresses every pain point specifically
+       5 = mentions the job but stays generic
+       0 = could be sent to any job
+
+    2. Tone (0-10) — Does it match required tone: {job_analysis["tone"]}?
+       10 = perfect match, sounds natural
+       5 = mostly right but some mismatches
+       0 = completely wrong tone
+
+    3. Specificity (0-10) — Does it mention specific skills, projects, and results?
+       10 = concrete examples with measurable results
+       5 = mentions skills but no specific examples
+       0 = completely generic
+
+    4. Hook (0-10) — Is the opening sentence attention-grabbing and client-focused?
+       10 = opens with client's problem, immediately compelling
+       5 = decent but starts with "I" or generic statement
+       0 = starts with "I am excited" or similar
+
+    5. CTA (0-10) — Is there a clear, specific, low-friction call to action?
+       10 = specific question that invites response
+       5 = vague "let me know" or "contact me"
+       0 = no clear next step
 
     Return ONLY a JSON object with exactly these fields:
     {{
@@ -256,7 +289,7 @@ def evaluate_quality(state: ProposalState) -> ProposalState:
             "cta": 0
         }},
         "total_score": 0,
-        "critique": ["list of specific improvements needed"]
+        "critique": ["specific actionable improvement for each weakness"]
     }}
 
     Return only the JSON. No explanation. No markdown. No extra text.
@@ -291,7 +324,7 @@ def route_after_evaluation(state: ProposalState) -> str:
     total_score = state["quality_report"]["total_score"]
     retry_count = state.get("retry_count", 0)
 
-    if total_score < 35 and retry_count < 2:
+    if total_score < 40 and retry_count < 2:
         return "retry"
     return "human_review"
 
@@ -347,8 +380,8 @@ def revise_draft(state: ProposalState) -> ProposalState:
     )
 
     prompt = f"""
-    You are an expert Upwork proposal writer.
-    Rewrite the following proposal based on human feedback.
+    You are a top-rated Upwork freelancer rewriting a proposal.
+    You have a 98% job success score and have won over 200 contracts.
 
     Current Proposal:
     {state["proposal_draft"]}
@@ -359,11 +392,24 @@ def revise_draft(state: ProposalState) -> ProposalState:
     Quality Critique:
     {state["quality_report"]["critique"]}
 
-    Requirements:
-    - Address ALL feedback points
-    - Keep 150 to 300 words
-    - No markdown, no bullet points
-    - No bold, no headers, no special characters
+    Rewrite the proposal following these STRICT rules:
+
+    MUST DO:
+    - Address EVERY point in the human feedback
+    - Fix EVERY issue mentioned in the quality critique
+    - Keep the hook focused on the CLIENT's problem, not your excitement
+    - Make it sound more human and confident
+    - Use specific details, not generic claims
+
+    MUST AVOID:
+    - Generic openers: "I am excited", "I would love to"
+    - Vague claims: "I am a quick learner", "I work hard"
+    - Listing skills without context
+    - Sounding like an AI wrote it
+
+    STRICT REQUIREMENTS:
+    - 150 to 250 words maximum
+    - No markdown, no bullet points, no bold, no headers
     - Plain text only
     - Correct grammar and spelling
     - Do not include subject line or greeting
