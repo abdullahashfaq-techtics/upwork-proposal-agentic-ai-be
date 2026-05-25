@@ -1,4 +1,6 @@
+import json
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional
@@ -25,11 +27,13 @@ class UserProfile(BaseModel):
 class ProposalRequest(BaseModel):
     job_description: str
     user_profile: UserProfile
+    stream: Optional[bool] = None
 
 
 class ResumeRequest(BaseModel):
     decision: str
     feedback: Optional[str] = ""
+    stream: Optional[bool] = None
 
 
 @router.get("/health")
@@ -101,6 +105,52 @@ def generate_proposal(
         user_id = user["user_id"]
 
         config = {"configurable": {"thread_id": user_id}}
+
+        if request.stream:
+
+            def event_generator():
+                try:
+                    for event in proposal_graph.stream(
+                        {
+                            "job_description": request.job_description,
+                            "user_profile": request.user_profile.model_dump(),
+                            "proposal_id": user_id,
+                        },
+                        config=config,
+                    ):
+                        for node_name, node_data in event.items():
+                            sse_data = {
+                                "node": node_name,
+                                "status": "completed",
+                            }
+                            yield f"data: {json.dumps(sse_data)}\n\n"
+
+                    current_state = proposal_graph.get_state(config)
+                    state_values = current_state.values
+                    final_data = {
+                        "node": "__end__",
+                        "status": "done",
+                        "data": {
+                            "user_id": user_id,
+                            "status": state_values.get("status"),
+                            "proposal_draft": state_values.get("proposal_draft"),
+                            "draft_version": state_values.get("draft_version"),
+                            "retry_count": state_values.get("retry_count"),
+                            "quality_report": state_values.get("quality_report"),
+                            "draft_history": state_values.get("draft_history"),
+                            "message": "Proposal ready for review. Use /proposal/resume to submit decision.",
+                        },
+                    }
+                    yield f"data: {json.dumps(final_data)}\n\n"
+                except Exception as e:
+                    error_data = {
+                        "node": "__error__",
+                        "status": "error",
+                        "detail": str(e),
+                    }
+                    yield f"data: {json.dumps(error_data)}\n\n"
+
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
 
         for event in proposal_graph.stream(
             {
@@ -187,6 +237,52 @@ def resume_proposal(
             },
             as_node="human_review",
         )
+
+        if request.stream:
+
+            def event_generator():
+                try:
+                    for event in proposal_graph.stream(
+                        None,
+                        config=config,
+                        stream_mode="values",
+                    ):
+                        node_name = event.get("status", "processing")
+                        sse_data = {
+                            "node": node_name,
+                            "status": "completed",
+                        }
+                        yield f"data: {json.dumps(sse_data)}\n\n"
+
+                    final_state = proposal_graph.get_state(config)
+                    is_paused = bool(final_state.tasks)
+                    final_data = {
+                        "node": "__end__",
+                        "status": "done",
+                        "data": {
+                            "user_id": user_id,
+                            "status": final_state.values.get("status"),
+                            "human_decision": final_state.values.get("human_decision"),
+                            "proposal_draft": final_state.values.get("proposal_draft"),
+                            "final_proposal": final_state.values.get("final_proposal"),
+                            "draft_version": final_state.values.get("draft_version"),
+                            "draft_history": final_state.values.get("draft_history"),
+                            "waiting_for_review": is_paused,
+                            "message": "Proposal revised. Please review again."
+                            if is_paused
+                            else f"Proposal {request.decision}.",
+                        },
+                    }
+                    yield f"data: {json.dumps(final_data)}\n\n"
+                except Exception as e:
+                    error_data = {
+                        "node": "__error__",
+                        "status": "error",
+                        "detail": str(e),
+                    }
+                    yield f"data: {json.dumps(error_data)}\n\n"
+
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
 
         for event in proposal_graph.stream(
             None,
